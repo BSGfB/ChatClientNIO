@@ -2,7 +2,6 @@ package ru.objects;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.google.gson.stream.JsonReader;
 
 import java.io.IOException;
@@ -18,7 +17,6 @@ import java.nio.channels.spi.SelectorProvider;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.security.SecureRandom;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -55,7 +53,7 @@ public class ChatClientNIO extends java.util.Observable implements Runnable {
 
         SecureRandom rnd = new SecureRandom();
         rnd.setSeed(System.currentTimeMillis());
-        K = new BigInteger(1024, rnd);
+        K = new BigInteger(512, rnd);
         privateWord = new BigInteger(256, rnd);
     }
 	
@@ -69,32 +67,45 @@ public class ChatClientNIO extends java.util.Observable implements Runnable {
     public void sendMessage(String type, String attachment) throws InterruptedException {
     	JsonObject reply = new JsonObject();
         reply.addProperty("type", type);
-        reply.addProperty("attachment", rc4.DoIt(new BigInteger(attachment.getBytes())));
-        queueIn.put(new Gson().toJson(reply));    
-        
-        System.out.println(reply);
+        reply.addProperty("attachment", attachment);
+                
+        BigInteger code = new BigInteger(new Gson().toJson(reply).getBytes());
+        code = rc4.DoIt(code);
+        queueIn.put(code.toString());      
         
         SelectionKey key = socketChannel.keyFor(selector);
         key.interestOps(SelectionKey.OP_WRITE);
         selector.wakeup();
     }
+    
+    private Message readMessage() throws IOException {
+    	 buffer.clear();
+         
+         if(socketChannel.read(buffer) <= 0) {
+         	throw new IOException("Read <= 0");
+         }
+         buffer.flip();
+         CharBuffer buff = decoder.decode(buffer);
+         
+         BigInteger code = new BigInteger(String.valueOf(buff));
+         code = rc4.DoIt(code);
+         
+         String str = new String(code.toByteArray(), ch);
+         
+         JsonReader reader = new JsonReader(new StringReader(str));
+         reader.setLenient(true);      
+         
+         return ((Message)new Gson().fromJson(reader, Message.class));
+    }
         
     private void read(SelectionKey key) throws IOException, InterruptedException {
-        buffer.clear();
-        socketChannel.read(buffer);
-        buffer.flip();
-        CharBuffer buff = decoder.decode(buffer);
-        
-        JsonReader reader = new JsonReader(new StringReader(String.valueOf(buff)));
-        reader.setLenient(true);
-        Message message = new Gson().fromJson(reader, Message.class);
-        System.out.println(message);
+        Message message = readMessage();
         
         if(message == null || message.equals("null")) return;
-        
+                
         switch (message.getType()) {
-            case "message":            	
-                Reply = message.getName() + " " + new String(rc4.DoIt(new BigInteger(message.getAttachment())).toByteArray());
+            case "message":
+                Reply = message.getName() + " " + message.getAttachment();
                 this.setChanged();
                 this.notifyObservers();
                 break;
@@ -103,24 +114,20 @@ public class ChatClientNIO extends java.util.Observable implements Runnable {
                 break;
             case "EKE-1.2":            	
             	BigInteger code = new BigInteger(message.getAttachment());
-            	code = rc4.DoIt(code);
             	rsa.setPublicKey(code);
+            	            	
             	BigInteger codeK = rsa.encrypt(K);
-            	codeK = rc4.DoIt(codeK);
             	sendMessage("EKE-1", codeK.toString());
+            	
             	rc4 = new RC4(K.toByteArray());
                 break;
             case "EKE-2":
-                sendMessage("EKE-2.1", rc4.DoIt(rc4.DoIt(new BigInteger(message.getAttachment()))).toString());
+                sendMessage("EKE-2.1", message.getAttachment());
                 Thread.currentThread().sleep(100);
-                sendMessage("EKE-2.2", rc4.DoIt(privateWord).toString());
+                sendMessage("EKE-2.2", privateWord.toString());
                 break;
             case "EKE-3":
-            	BigInteger word = rc4.DoIt(new BigInteger(message.getAttachment()));
-            	
-            	System.out.println("Word: " + word);
-            	System.out.println("privateWord: " + privateWord);
-            	
+            	BigInteger word = new BigInteger(message.getAttachment());          	
             	if(!privateWord.equals(word)) {
             		System.out.println("Error: EKE-3. Server private str 2 != user private str 2");
                     System.exit(-18);
